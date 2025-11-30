@@ -403,7 +403,11 @@ def verify_vacuum_effect(
         cluster_centers = {}
         for cluster_id in np.unique(labels_arr):
             mask = labels_arr == cluster_id
-            cluster_items = hist_tensor[mask]
+            # numpy maskをPyTorchテンソルに変換してインデックス
+            mask_tensor = torch.from_numpy(mask)
+            if use_cuda and torch.cuda.is_available():
+                mask_tensor = mask_tensor.cuda()
+            cluster_items = hist_tensor[mask_tensor]
             cluster_embeds = model.item_embedding(cluster_items)
             cluster_centers[cluster_id] = cluster_embeds.mean(dim=0)
         

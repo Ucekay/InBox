@@ -274,7 +274,12 @@ def main():
     checkpoint_file = os.path.join(args.checkpoint_path, args.checkpoint)
     if os.path.exists(checkpoint_file):
         print(f"Loading checkpoint: {checkpoint_file}")
-        checkpoint = torch.load(checkpoint_file, map_location='cpu' if not args.cuda else None)
+        # デバイスを明示的に指定してロード
+        if args.cuda and torch.cuda.is_available():
+            map_location = f'cuda:{args.gpu_id}'
+        else:
+            map_location = 'cpu'
+        checkpoint = torch.load(checkpoint_file, map_location=map_location)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Model loaded successfully!")
     else:

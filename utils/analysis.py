@@ -8,7 +8,7 @@ Phase 1: ターゲットユーザーの自動発掘（Clustering Scan）
 Phase 2: 定量分析（Diversity Score, Box Volume, Performance）
 Phase 3: 定性分析（真空地帯のアイテム特定）
 
-作成日: 2025年12月1日
+作成日: 2025年11月30日
 """
 
 import numpy as np
@@ -1061,7 +1061,9 @@ def generate_analysis_report(
         
         f.write("## 4. 真空地帯検証（Top 5ユーザー）\n\n")
         for i, vr in enumerate(vacuum_results[:5]):
-            f.write(f"### ユーザー {vr['uid']} (シルエットスコア: {vr.get('silhouette_score', 'N/A'):.4f})\n\n")
+            silhouette = vr.get('silhouette_score', None)
+            silhouette_str = f"{silhouette:.4f}" if silhouette is not None else "N/A"
+            f.write(f"### ユーザー {vr['uid']} (シルエットスコア: {silhouette_str})\n\n")
             f.write("**推薦された「真空地帯」アイテム:**\n")
             for item in vr['vacuum_items'][:3]:
                 f.write(f"- Item {item['item_id']}: 中心からの距離 = {item['distance_to_center']:.4f}\n")

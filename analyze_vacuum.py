@@ -18,7 +18,7 @@ InBox 単一興味ボックスの限界立証 - 分析実行スクリプト
     - vacuum_analysis_report.md: 総合レポート
     - scatter_plots/: 散布図（matplotlib使用時）
 
-作成日: 2025年12月1日
+作成日: 2025年11月30日
 """
 
 import os

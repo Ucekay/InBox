@@ -608,13 +608,20 @@ def compute_zone_hit_rates(
         # 真空地帯：全体中心に最も近いアイテム
         dists_to_vacuum = np.linalg.norm(all_items_np - overall_center, axis=1)
         dists_to_vacuum[train_mask] = np.inf
-        vacuum_items = np.argsort(dists_to_vacuum)[:top_k]
+        
+        # infでないアイテムのみを取得（最大top_k個）
+        valid_vacuum_indices = np.where(dists_to_vacuum < np.inf)[0]
+        sorted_vacuum_indices = valid_vacuum_indices[np.argsort(dists_to_vacuum[valid_vacuum_indices])]
+        vacuum_items = sorted_vacuum_indices[:top_k]
+        actual_vacuum_count = len(vacuum_items)
+        
         vacuum_hits = sum(1 for item in vacuum_items if item in test_items)
-        vacuum_hit_rate = vacuum_hits / top_k
+        vacuum_hit_rate = vacuum_hits / actual_vacuum_count if actual_vacuum_count > 0 else 0.0
         
         # 非真空地帯：各クラスタ中心に最も近いアイテム（真空地帯と重複を除く）
         cluster_results = {}
         all_cluster_items = set()
+        total_cluster_items = 0
         
         for cluster_id, center in enumerate(cluster_centers):
             dists_to_cluster = np.linalg.norm(all_items_np - center, axis=1)
@@ -624,20 +631,27 @@ def compute_zone_hit_rates(
             for v_item in vacuum_items:
                 dists_to_cluster[v_item] = np.inf
             
-            cluster_top_items = np.argsort(dists_to_cluster)[:top_k]
+            # infでないアイテムのみを取得（最大top_k個）
+            valid_cluster_indices = np.where(dists_to_cluster < np.inf)[0]
+            sorted_cluster_indices = valid_cluster_indices[np.argsort(dists_to_cluster[valid_cluster_indices])]
+            cluster_top_items = sorted_cluster_indices[:top_k]
+            actual_cluster_count = len(cluster_top_items)
+            
             cluster_hits = sum(1 for item in cluster_top_items if item in test_items)
-            cluster_hit_rate = cluster_hits / top_k
+            cluster_hit_rate = cluster_hits / actual_cluster_count if actual_cluster_count > 0 else 0.0
             
             cluster_results[cluster_id] = {
                 'items': cluster_top_items.tolist(),
                 'hits': cluster_hits,
-                'hit_rate': cluster_hit_rate
+                'hit_rate': cluster_hit_rate,
+                'actual_count': actual_cluster_count
             }
             all_cluster_items.update(cluster_top_items.tolist())
+            total_cluster_items += actual_cluster_count
         
         # 非真空地帯の平均正解率
         non_vacuum_total_hits = sum(cr['hits'] for cr in cluster_results.values())
-        non_vacuum_hit_rate = non_vacuum_total_hits / (top_k * n_clusters)
+        non_vacuum_hit_rate = non_vacuum_total_hits / total_cluster_items if total_cluster_items > 0 else 0.0
         
         return {
             'uid': uid,
@@ -648,9 +662,11 @@ def compute_zone_hit_rates(
             'vacuum_items': vacuum_items.tolist(),
             'vacuum_hits': vacuum_hits,
             'vacuum_hit_rate': vacuum_hit_rate,
+            'vacuum_item_count': actual_vacuum_count,
             # 非真空地帯（クラスタ別）
             'cluster_results': cluster_results,
             'non_vacuum_hit_rate': non_vacuum_hit_rate,
+            'non_vacuum_item_count': total_cluster_items,
             # 比較
             'vacuum_vs_non_vacuum_diff': vacuum_hit_rate - non_vacuum_hit_rate,
             'vacuum_is_worse': vacuum_hit_rate < non_vacuum_hit_rate

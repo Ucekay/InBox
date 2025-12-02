@@ -6,7 +6,7 @@ def parse_args(args=None):
     # ===== environment ===== #
     parser.add_argument("--cuda", action='store_true', help="use gpu or not")
     parser.add_argument("--gpu_id", type=int, default=0, help="gpu id")
-    parser.add_argument("--cpu_num", type=int, default=24, help="cpu num")
+    parser.add_argument("--cpu_num", type=int, default=0, help="cpu num for DataLoader workers (0=main process only, recommended for WSL)")
 
     # ===== dataset ===== #
     parser.add_argument("--dataset", nargs="?", default="last-fm", help="Choose a dataset:[last-fm,amazon-book,alibaba]")

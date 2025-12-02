@@ -89,9 +89,13 @@ def read_triplets(file_name):
             # IRT 没有添加逆三元组，分别替换item和tag
             h, r, t = triplet
             if (h >= n_items) and (t < n_items):
+                # (tag, relation, item) -> (item, relation+n_ori, tag)
                 triplets_IRT.append([t, r+n_ori_relations, h])
-            else:
+            elif (h < n_items) and (t >= n_items):
+                # (item, relation, tag) -> そのまま
                 triplets_IRT.append(list(triplet))
+            # else: h < n_items and t < n_items はIRIに分類されるべき（ここには来ない）
+            # または h >= n_items and t >= n_items はTRTに分類されるべき（ここには来ない）
 
     return triplets_IRT, triplets_TRT, triplets_IRI
 

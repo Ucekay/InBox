@@ -28,39 +28,56 @@ class PreTrainDataset_IRT(Dataset):
 
         self.count = self.count_frequency(self.triplets, self.n_relation)
         self.true_item, self.true_tag = self.get_true_item_and_tag(self.triplets)
-
-        if self.mode == 'IRT-item':
-            self.get_neg()
+        # オンザフライサンプリングに変更: get_neg()の事前計算を削除
 
         
     def __len__(self):
         return self.len
     
     def __getitem__(self, idx):
-        positive_sample = self.data[idx]
+        # コピーを作成して元のデータを変更しないようにする
+        positive_sample = list(self.data[idx])
         item, relation, tag = positive_sample
         
-        subsampling_weight = self.count[(item, relation)] + self.count[(tag, (relation+self.n_relation/2)%(self.n_relation))]
+        # 境界チェック: relation が有効範囲内であることを確認
+        if relation < 0 or relation >= self.n_relation:
+            raise ValueError(f"Invalid relation in IRT: relation={relation}, n_relation={self.n_relation}, idx={idx}")
+        
+        # KeyError防止: キーが存在しない場合はデフォルト値4を使用
+        inverse_relation = (relation + self.n_relation // 2) % self.n_relation
+        count_head = self.count.get((item, relation), 4)
+        count_tail = self.count.get((tag, inverse_relation), 4)
+        subsampling_weight = count_head + count_tail
         subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
         
         if self.mode == 'IRT-item':
-            all_negative = self.neg_item_sample[(relation, tag)]
-            if len(all_negative) == 0:
-                negative_sample = np.random.randint(0, self.n_items, self.negative_sample_size).tolist()
-            elif len(all_negative) < self.negative_sample_size:
-                negative_sample = all_negative * (int(self.negative_sample_size/len(all_negative))+1)
-                negative_sample = negative_sample[:self.negative_sample_size]
-            else:
-                negative_sample = random.sample(all_negative, self.negative_sample_size)
+            # オンザフライでネガティブサンプルを生成（メモリ効率改善）
+            negative_sample_list = []
+            negative_sample_size = 0
+            true_items = self.true_item.get((relation, tag), np.array([], dtype=np.int64))
+            while negative_sample_size < self.negative_sample_size:
+                neg_samples = np.random.randint(0, self.n_items, size=self.negative_sample_size*2)
+                mask = np.in1d(
+                    neg_samples, 
+                    true_items, 
+                    assume_unique=True,
+                    invert=True
+                )
+                neg_samples = neg_samples[mask]
+                negative_sample_list.append(neg_samples)
+                negative_sample_size += neg_samples.size
+            negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size]
             
         elif self.mode == 'IRT-tag':
             negative_sample_list = []
             negative_sample_size = 0
+            # KeyError防止: true_tagにキーが存在しない場合は空配列を使用
+            true_tags = self.true_tag.get((item, relation), np.array([], dtype=np.int64))
             while negative_sample_size < self.negative_sample_size:
                 negative_sample = np.random.randint(self.n_items, self.n_entities, size=self.negative_sample_size*2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_tag[(item, relation)], 
+                    true_tags, 
                     assume_unique=True,
                     invert=True
                 )
@@ -69,11 +86,28 @@ class PreTrainDataset_IRT(Dataset):
                 negative_sample_size += negative_sample.size
             negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size]
         
+        n_tags = self.n_entities - self.n_items
         
         if self.mode == 'IRT-tag':
             negative_sample = negative_sample - self.n_items
+            # IRT-tagモード: negative_sampleの境界チェック
+            if np.any(negative_sample < 0) or np.any(negative_sample >= n_tags):
+                bad_vals = negative_sample[(negative_sample < 0) | (negative_sample >= n_tags)]
+                raise ValueError(f"Invalid negative_sample in IRT-tag: values={bad_vals[:5]}, n_tags={n_tags}")
+        elif self.mode == 'IRT-item':
+            # IRT-itemモード: negative_sampleの境界チェック
+            if np.any(negative_sample < 0) or np.any(negative_sample >= self.n_items):
+                bad_vals = negative_sample[(negative_sample < 0) | (negative_sample >= self.n_items)]
+                raise ValueError(f"Invalid negative_sample in IRT-item: values={bad_vals[:5]}, n_items={self.n_items}")
+        
+        # 境界チェック: tagがn_items以上であることを確認（IRTトリプルの条件）
+        tag_idx = positive_sample[2] - self.n_items
+        if tag_idx < 0 or tag_idx >= n_tags:
+            raise ValueError(f"Invalid tag index in IRT: original_tag={positive_sample[2]}, "
+                           f"tag_idx={tag_idx}, n_items={self.n_items}, n_tags={n_tags}, mode={self.mode}")
+        
         negative_sample = torch.LongTensor(negative_sample)
-        positive_sample[2] = positive_sample[2] - self.n_items
+        positive_sample[2] = tag_idx
         positive_sample = torch.LongTensor(positive_sample)
         
         return positive_sample, negative_sample, subsampling_weight, self.mode
@@ -87,10 +121,10 @@ class PreTrainDataset_IRT(Dataset):
             else:
                 count[(head, relation)] += 1
 
-            if (tail, (relation+n_relation/2)%(n_relation)) not in count:
-                count[(tail, (relation+n_relation/2)%(n_relation))] = start
+            if (tail, (relation+n_relation//2)%(n_relation)) not in count:
+                count[(tail, (relation+n_relation//2)%(n_relation))] = start
             else:
-                count[(tail, (relation+n_relation/2)%(n_relation))] += 1
+                count[(tail, (relation+n_relation//2)%(n_relation))] += 1
         return count
 
     @staticmethod
@@ -121,11 +155,8 @@ class PreTrainDataset_IRT(Dataset):
         mode = data[0][3]
         return positive_sample, negative_sample, subsample_weight, mode
 
-    def get_neg(self):
-        self.neg_item_sample = {}
-        all_items = set(list(range(0, self.n_items)))
-        for key, true_items in self.true_item.items():
-            self.neg_item_sample[key] = list(all_items.difference(set(true_items)))
+    # get_neg()メソッドは削除: オンザフライサンプリングに移行
+    # 旧実装は大量のメモリを消費していた（全(relation, tag)ペア × 全アイテム数）
 
 
 class PreTrainDataset_TRT_IRI(Dataset):
@@ -146,22 +177,30 @@ class PreTrainDataset_TRT_IRI(Dataset):
         return self.len
     
     def __getitem__(self, idx):
-        positive_sample = self.triplets[idx]
+        # コピーを作成して元のデータを変更しないようにする
+        positive_sample = list(self.triplets[idx])
         head, relation, tail = positive_sample
         
-        subsampling_weight = self.count[(head, relation)] + self.count[(tail,(relation+self.n_relation/2)%(self.n_relation))]
+        # KeyError防止: キーが存在しない場合はデフォルト値4を使用
+        inverse_relation = (relation + self.n_relation // 2) % self.n_relation
+        count_head = self.count.get((head, relation), 4)
+        count_tail = self.count.get((tail, inverse_relation), 4)
+        subsampling_weight = count_head + count_tail
 
         subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
 
         negative_sample_list = []
         negative_sample_size = 0
 
+        # KeyError防止: true_tailにキーが存在しない場合は空配列を使用
+        true_tails = self.true_tail.get((head, relation), np.array([], dtype=np.int64))
+        
         while negative_sample_size < self.negative_sample_size:
             if self.mode == 'TRT':
                 negative_sample = np.random.randint(self.n_items, self.n_entities, size=self.negative_sample_size*2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_tail[(head, relation)],
+                    true_tails,
                     assume_unique=True,
                     invert=True
                 )
@@ -169,7 +208,7 @@ class PreTrainDataset_TRT_IRI(Dataset):
                 negative_sample = np.random.randint(0, self.n_items, size=self.negative_sample_size*2)
                 mask = np.in1d(
                     negative_sample, 
-                    self.true_tail[(head, relation)], 
+                    true_tails, 
                     assume_unique=True,
                     invert=True
                 )
@@ -180,11 +219,25 @@ class PreTrainDataset_TRT_IRI(Dataset):
             negative_sample_size += negative_sample.size
         
         negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size]
+        
+        # 境界チェック
         if self.mode == 'TRT':
+            # TRTモード: head, tailはどちらもタグ（>= n_items）
+            if positive_sample[0] < self.n_items or positive_sample[2] < self.n_items:
+                raise ValueError(f"Invalid TRT triplet: head={positive_sample[0]}, tail={positive_sample[2]}, n_items={self.n_items}")
             positive_sample[2] = positive_sample[2] - self.n_items
             positive_sample[0] = positive_sample[0] - self.n_items
-
             negative_sample = negative_sample - self.n_items
+            
+            # 変換後の値が範囲内であることを確認
+            n_tags = self.n_entities - self.n_items
+            if positive_sample[0] < 0 or positive_sample[0] >= n_tags or positive_sample[2] < 0 or positive_sample[2] >= n_tags:
+                raise ValueError(f"Invalid TRT tag indices after conversion: head={positive_sample[0]}, tail={positive_sample[2]}, n_tags={n_tags}")
+        elif self.mode == 'IRI':
+            # IRIモード: head, tailはどちらもアイテム（< n_items）
+            if positive_sample[0] >= self.n_items or positive_sample[2] >= self.n_items:
+                raise ValueError(f"Invalid IRI triplet: head={positive_sample[0]}, tail={positive_sample[2]}, n_items={self.n_items}")
+        
         negative_sample = torch.LongTensor(negative_sample)
         positive_sample = torch.LongTensor(positive_sample)
 
@@ -280,15 +333,31 @@ class TestforPreTrainDataset(Dataset):
     def __getitem__(self, idx):
         item, relation, tag = self.data[idx]
 
-        tmp = [(0, rand_tag) if rand_tag not in self.true_tag[(item, relation)]
-                   else (-1, tag) for rand_tag in range(self.n_item, self.n_entity)]
-        tmp[tag-self.n_item] = (0, tag)
+        # メモリ効率改善: リスト内包表記からnumpy配列操作に変更
+        n_tags = self.n_entity - self.n_item
+        tag_idx = tag - self.n_item  # 正解タグのインデックス
+        negative_sample = np.arange(n_tags, dtype=np.int64)  # 0からn_tags-1
+        filter_bias = np.zeros(n_tags, dtype=np.float32)  # デフォルト0
         
-        tmp = torch.LongTensor(tmp)
-        filter_bias = tmp[:, 0].float()
-        negative_sample = tmp[:, 1] - self.n_item
+        # 訓練データに含まれるタグにはfilter_biasを-1に、negative_sampleを正解タグIDに
+        # （元の実装: else (-1, tag) の再現）
+        true_tags = self.true_tag.get((item, relation), np.array([], dtype=np.int64))
+        if len(true_tags) > 0:
+            true_tag_indices = true_tags - self.n_item
+            # 範囲内のインデックスのみ使用
+            valid_mask = (true_tag_indices >= 0) & (true_tag_indices < n_tags)
+            filter_bias[true_tag_indices[valid_mask]] = -1.0
+            negative_sample[true_tag_indices[valid_mask]] = tag_idx  # 元の実装と同じ
+        
+        # 正解タグはfilter_bias=0、negative_sample=自身のインデックス（評価対象）
+        # 境界チェック: tag_idxが有効な範囲内であることを確認
+        if 0 <= tag_idx < n_tags:
+            filter_bias[tag_idx] = 0.0
+            negative_sample[tag_idx] = tag_idx
 
-        positive_sample = torch.LongTensor((item, relation, tag-self.n_item))
+        positive_sample = torch.LongTensor((item, relation, tag_idx))
+        negative_sample = torch.from_numpy(negative_sample)
+        filter_bias = torch.from_numpy(filter_bias)
 
         return positive_sample, negative_sample, filter_bias, self.mode
         
@@ -449,17 +518,30 @@ class TestforPreTrainInterDataset(Dataset):
         positive_sample = item
         ori_tags = "".join(str(rel_tag[1]) for rel_tag in self.item_tag[positive_sample])
 
-        tmp = [(0, rand_item) if rand_item not in self.tureitem[ori_tags]
-                   else (-1, item) for rand_item in range(self.n_items)]
-        tmp[item] = (0, item)
-        tmp = torch.tensor(tmp)
+        # メモリ効率改善: リスト内包表記からnumpy配列操作に変更
+        negative_sample = np.arange(self.n_items, dtype=np.int64)
+        filter_bias = np.zeros(self.n_items, dtype=np.float32)
         
-        filter_bias = tmp[:, 0].float()
-        negative_sample = tmp[:, 1]
+        # 同じタグを持つアイテムにはfilter_biasを-1、negative_sampleをitemに
+        true_items = self.tureitem.get(ori_tags, [])
+        if len(true_items) > 0:
+            true_items_arr = np.array(true_items, dtype=np.int64)
+            valid_mask = (true_items_arr >= 0) & (true_items_arr < self.n_items)
+            valid_items = true_items_arr[valid_mask]
+            filter_bias[valid_items] = -1.0
+            negative_sample[valid_items] = item
         
-        tags = tags-self.n_items
+        # 正解アイテムはfilter_bias=0（評価対象）
+        # 境界チェック: itemが有効な範囲内であることを確認
+        if 0 <= item < self.n_items:
+            filter_bias[item] = 0.0
+            negative_sample[item] = item
+        
+        negative_sample = torch.from_numpy(negative_sample)
+        filter_bias = torch.from_numpy(filter_bias)
+        
+        tags = tags - self.n_items
         positive_sample = torch.LongTensor([positive_sample])
-        filter_bias = torch.tensor(filter_bias)
         
         return positive_sample, negative_sample, relations, tags, filter_bias
 
@@ -640,13 +722,20 @@ class TestDataset(Dataset):
 
         train_items = self.train_ui_set[user]
 
-        tmp = [(0, rand_item) if rand_item not in train_items
-                   else (-1, self.n_items) for rand_item in range(self.n_items)]
-        tmp = torch.tensor(tmp)
+        # メモリ効率改善: リスト内包表記からnumpy配列操作に変更
+        negative_sample = np.arange(self.n_items, dtype=np.int64)
+        filter_bias = np.zeros(self.n_items, dtype=np.float32)
+        
+        # 訓練データに含まれるアイテムにはfilter_biasを-1、negative_sampleをn_itemsに
+        train_items_arr = np.array(train_items, dtype=np.int64)
+        valid_mask = (train_items_arr >= 0) & (train_items_arr < self.n_items)
+        valid_items = train_items_arr[valid_mask]
+        filter_bias[valid_items] = -1.0
+        negative_sample[valid_items] = self.n_items
         
         positive_sample = torch.LongTensor([self.n_items])
-        negative_sample = tmp[:, 1]
-        filter_bias = tmp[:, 0].float()
+        negative_sample = torch.from_numpy(negative_sample)
+        filter_bias = torch.from_numpy(filter_bias)
 
         train_items = torch.LongTensor(train_items)
 
